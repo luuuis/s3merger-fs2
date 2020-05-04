@@ -1,3 +1,5 @@
-# s3merger-fs2 experiment
+# s3merger-fs2
 
-TBD.
+```
+$ sbt run
+```

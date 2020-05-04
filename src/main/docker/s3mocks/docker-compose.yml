@@ -1,0 +1,10 @@
+version: '3'
+services:
+  minio:
+    image: "minio/minio"
+    volumes:
+      - "${PWD}/buckets:/buckets"
+    ports:
+      - 9000:9000
+
+    command: server /buckets
