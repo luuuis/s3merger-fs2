@@ -2,7 +2,7 @@ package s3merger
 
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.implicits._
-import fs2.{Pipe, Stream}
+import fs2.{Chunk, Pipe, Stream}
 import squants.information.Information
 import squants.information.InformationConversions._
 
@@ -20,12 +20,27 @@ object S3Merger extends IOApp {
     s3merger(
       s3 = S3.localhost(port = 9000, chunkSize = 2.megabytes),
       inBucket = S3Bucket("fragments"),
-      outBucket = S3Bucket("rollup")).compile.drain.as(ExitCode.Success)
+      outBucket = S3Bucket("rollup")
+    ).compile.drain.as(ExitCode.Success)
 
-  def s3merger(s3: S3Lib, inBucket: S3Bucket, outBucket: S3Bucket): Stream[IO, Unit] = {
-    val outFile = S3File(outBucket, "one_big_chunk", size=0.bytes)
+  def s3merger(s3: S3Lib, inBucket: S3Bucket, outBucket: S3Bucket): Stream[IO, Unit] =
     s3.listFiles(inBucket)
-      .flatMap(s3.readFile)
-      .through(s3.writeFile(outFile))
-  }
+      .through(chunkMinimumSize(32.megabytes))
+      .map({ case (slot, chunk) => (chunk, S3File(outBucket, s"chunked_$slot", chunk.map(_.size).fold)) })
+      .flatMap({ case (inFiles, outFile) => Stream.chunk(inFiles)
+        .covary[IO]
+        .flatMap(inFile => s3.readFile(inFile))
+        .through(s3.writeFile(outFile))
+      })
+
+  def chunkMinimumSize(chunkAtLeast: Information): Pipe[IO, S3File, (Int, Chunk[S3File])] =
+    s3Files => s3Files
+      .mapAccumulate((0, 0.bytes))({ case ((slot, seenSize), s3File) =>
+        if (seenSize >= chunkAtLeast)
+          ((slot + 1, s3File.size), s3File) // next slot
+        else
+          ((slot, s3File.size + seenSize), s3File)
+      })
+      .groupAdjacentBy({ case ((slot, seenSize), s3File) => slot })
+      .map({ case (slot, chunk) => (slot, chunk.map(_._2)) })
 }
