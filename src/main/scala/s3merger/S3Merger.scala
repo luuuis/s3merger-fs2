@@ -20,18 +20,19 @@ object S3Merger extends IOApp {
     s3merger(
       s3 = S3.localhost(port = 9000, chunkSize = 2.megabytes),
       inBucket = S3Bucket("fragments"),
-      outBucket = S3Bucket("rollup")
+      outBucket = S3Bucket("rollup"),
+      maxConcurrentUploads = 4,
     ).compile.drain.as(ExitCode.Success)
 
-  def s3merger(s3: S3Lib, inBucket: S3Bucket, outBucket: S3Bucket): Stream[IO, Unit] =
+  def s3merger(s3: S3Lib, inBucket: S3Bucket, outBucket: S3Bucket, maxConcurrentUploads: Int): Stream[IO, Unit] =
     s3.listFiles(inBucket)
       .through(chunkMinimumSize(32.megabytes))
       .map({ case (slot, chunk) => (chunk, S3File(outBucket, s"chunked_$slot", chunk.map(_.size).fold)) })
-      .flatMap({ case (inFiles, outFile) => Stream.chunk(inFiles)
+      .balanceThrough(1, maxConcurrentUploads)(_.flatMap({ case (inFiles, outFile) => Stream.chunk(inFiles)
         .covary[IO]
-        .flatMap(inFile => s3.readFile(inFile))
+        .flatMap(s3.readFile)
         .through(s3.writeFile(outFile))
-      })
+      }))
 
   def chunkMinimumSize(chunkAtLeast: Information): Pipe[IO, S3File, (Int, Chunk[S3File])] =
     s3Files => s3Files
